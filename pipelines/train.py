@@ -13,6 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
 	average_precision_score,
 	balanced_accuracy_score,
+	confusion_matrix,
 	f1_score,
 	precision_score,
 	recall_score,
@@ -153,6 +154,11 @@ def evaluate_model(
 	"""
 	y_prob = model.predict_proba(X)[:, 1]
 	y_pred = (y_prob >= 0.5).astype(int)
+	true_negative, false_positive, false_negative, true_positive = confusion_matrix(
+		y_true,
+		y_pred,
+		labels=[0, 1],
+	).ravel()
 
 	metrics = {
 		"split": label,
@@ -163,6 +169,12 @@ def evaluate_model(
 		"f1": float(f1_score(y_true, y_pred, zero_division=0)),
 		"balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
 		"positive_rate": float(y_true.mean()),
+		"confusion_matrix": {
+			"true_negative": int(true_negative),
+			"false_positive": int(false_positive),
+			"false_negative": int(false_negative),
+			"true_positive": int(true_positive),
+		},
 	}
 	return metrics
 

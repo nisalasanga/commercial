@@ -202,15 +202,13 @@ From project root:
 C:/Users/nisalw/AppData/Local/anaconda3/envs/venv/python.exe pipelines/train.py
 ```
 
-### Training artifacts
+### Held-out validation results
 
-The pipeline saves:
-
-1. artifacts/random_forest_npl.pkl
-2. artifacts/train_metrics.json
-3. artifacts/feature_columns.json
-
-### Example training and test metrics
+The following results are from the latest run of `pipelines/train.py` on the
+time-based held-out test split (the latest 20% of dates; 28,860 rows). The
+binary predictions use a probability threshold of 0.5, and class `1` is NPL.
+Results are shown in the same JSON structure written to
+`artifacts/train_metrics.json`:
 
 ```json
 {
@@ -237,7 +235,141 @@ The pipeline saves:
 }
 ```
 
-The current script prints both the train and test metric blocks to the terminal for quick validation.
+In the confusion matrix, rows are actual labels and columns are predicted
+labels. Precision measures the fraction of predicted NPL cases that are
+actually NPL; recall measures the fraction of actual NPL cases identified by
+the model. These results describe the current dataset and split; they are not
+a guarantee of future production performance.
+
+### Training artifacts
+
+The pipeline saves:
+
+1. artifacts/random_forest_npl.pkl
+2. artifacts/train_metrics.json
+3. artifacts/feature_columns.json
+
+## Part 2: Deployment and MLOps Architecture
+
+The production design automates model training and daily inference while keeping
+feature generation consistent between the two workflows. The current repository
+implements local CSV-based training and batch prediction; MLflow, a database, and
+CI/CD are proposed production extensions.
+
+### Training workflow
+
+1. **Ingest and validate data.** Load daily seller transactions from the source
+   system and check the schema, required fields, date validity, duplicate
+   seller-date records, and missing or invalid values.
+2. **Build the training master table.** Generate historical seller-date features
+   from data available on or before each date. Create the NPL target from the
+   following 90 days and exclude rows without the required history and label
+   horizon.
+3. **Train and evaluate.** Use a chronological train/test split so later dates
+   remain unseen during training. Track ROC-AUC, PR-AUC, precision, recall, F1,
+   and balanced accuracy; choose promotion thresholds based on lending
+   requirements rather than accuracy alone.
+4. **Track and register the model.** Log parameters, metrics, feature names,
+   data/version identifiers, and the serialized model to MLflow. Register
+   approved candidates with a version and lifecycle status; retain the local
+   artifacts in this repository as the current prototype approach.
+5. **Promote deliberately.** Compare candidates against the current production
+   model and validation thresholds, then require approval before promotion.
+   Keep the prior version available for rollback.
+
+### Inference workflow
+
+1. Ingest the latest available daily records, retaining sufficient history to
+   compute the rolling and lag features.
+2. Run the same feature-building logic used during training, then select the
+   latest valid feature row for each seller. Inference does not require a
+   future target label.
+3. Load the approved model version and its expected feature schema from the
+   registry. Validate the input schema and feature ordering before scoring.
+4. Generate an NPL probability and a threshold-based label for each seller.
+   Store scores with seller ID, scoring date, model version, and run ID in a
+   database table (or a governed lakehouse table such as a Databricks/Unity
+   Catalog table). The current local pipeline writes
+   `artifacts/predictions.csv`.
+5. Make scores available to authorized analyst tools and dashboards. Store
+   lending decisions and human overrides separately from model outputs so the
+   model score remains auditable.
+
+### CI/CD, operations, and governance
+
+- On each code push or pull request, run formatting/lint checks, unit tests for
+  feature generation and inference, and integration tests for training,
+  artifact loading, and schema compatibility.
+- On an approved merge, build a versioned release, record its source commit,
+  and publish model artifacts through MLflow. Deploy inference code separately
+  from model promotion so a code release cannot silently replace the approved
+  model.
+- Schedule ingestion, master-table generation, inference, and quality checks
+  with an orchestrator such as Airflow, Azure Data Factory, or Databricks
+  Workflows. Make jobs retry-safe and alert on failures or stale input data.
+- Monitor data freshness, missing/invalid fields, feature and prediction
+  distributions, score coverage, and model performance when delayed outcomes
+  become available. Trigger investigation or retraining on defined thresholds;
+  do not automatically promote a retrained model without validation.
+- Apply least-privilege access, encrypt data in transit and at rest, protect
+  seller identifiers and documents, and retain audit records for model
+  versions, scores, decisions, and overrides.
+
+### Deployment options
+
+For a local or cloud-agnostic deployment, Python batch jobs can be orchestrated
+with Airflow, tracked in MLflow, and write scores to a SQL database or warehouse.
+A FastAPI service can be added if low-latency, on-demand inference is needed;
+the current use case is naturally suited to batch scoring.
+
+On Databricks, Workflows can orchestrate ingestion, training, and batch scoring;
+Unity Catalog can govern data and model access; MLflow can track and register
+models; and a SQL warehouse or governed Delta table can serve scores to
+downstream analytics. Select batch jobs or Model Serving based on latency needs.
+
+## Part 3: Document-grounded Analyst Assistant
+
+An optional retrieval-augmented generation (RAG) assistant can help analysts
+review seller financial documents alongside the model's risk score. It should
+provide evidence for human review, not make or approve credit decisions.
+
+### Document and query flow
+
+1. An authorized user uploads a PDF or other supported financial document.
+2. Extract text and metadata, split it into overlapping chunks, and create
+   embeddings. Store the chunks and embeddings in a vector store such as
+   Chroma or FAISS for a local prototype, or a governed service such as
+   Databricks Vector Search for a managed deployment.
+3. Associate every document and chunk with a seller/case ID, source filename,
+   page number, and access-control metadata. Enforce authorization before
+   retrieving any seller's content.
+4. An analyst asks a question. A LangGraph workflow can route it to tools for
+   seller-scoped document retrieval and read-only access to the prediction
+   table. MCP can provide a standard interface for exposing those tools to
+   compatible agents and clients; it is a tool-integration protocol, not the
+   workflow orchestrator itself.
+5. The language model answers using retrieved evidence and the current model
+   score, cites document filenames/pages and score dates, and reports when
+   evidence is insufficient or conflicting. It must not invent facts or treat
+   an uncited answer as verified.
+6. Record the question, retrieved source references, model/version and score
+   used, answer, and user feedback in an access-controlled audit log, subject
+   to retention and privacy requirements.
+
+### Safety and evaluation
+
+- Use seller-level authorization on every retrieval and prediction lookup;
+  never rely on a prompt instruction as an access-control mechanism.
+- Treat uploaded content as untrusted input. Do not execute document
+  instructions or allow retrieved text to override tool permissions.
+- Expose the prediction database through narrowly scoped, read-only tools.
+  Require human review for lending decisions and record any resulting
+  override separately.
+- Evaluate retrieval relevance, citation correctness, answer groundedness,
+  access-control behavior, and refusal/insufficient-evidence behavior before
+  deployment. Monitor these measures and provide a way for analysts to report
+  incorrect or unsafe answers.
+
 
 ## Main Files
 
@@ -262,8 +394,11 @@ Pipeline script to build and save artifacts/master_table.csv.
 7. pipelines/train.py
 Training script that builds the Random Forest model and saves train/test metrics.
 
-8. ARCHITECTURE.md
-Part 2 (MLOps) and Part 3 (Agentic AI + RAG) design notes.
+8. pipelines/predict.py and src/train_predict/predict.py
+Batch inference pipeline and reusable latest-seller feature scoring utilities.
+
+9. ARCHITECTURE.md
+Supplementary Part 2 (MLOps) and Part 3 (Agentic AI + RAG) design notes.
 
 ## How To Run
 
@@ -275,16 +410,8 @@ From analysis folder:
 C:/Users/nisalw/AppData/Local/anaconda3/envs/venv/python.exe run_eda.py
 ```
 
-### Run Streamlit app
-
-From project root:
-
-```bash
-C:/Users/nisalw/AppData/Local/anaconda3/envs/venv/python.exe -m streamlit run app.py
-```
-
 ## Modeling Summary
 
-1. Aggregate daily records to seller-level features.
-2. Train a Logistic Regression model with class balancing.
-3. Report metrics and seller-level default probabilities.
+1. Build seller-date features from daily transaction history.
+2. Train a class-balanced Random Forest using a chronological split.
+3. Evaluate NPL risk and save model artifacts for batch inference.

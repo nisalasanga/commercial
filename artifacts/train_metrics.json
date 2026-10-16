@@ -7,7 +7,13 @@
     "recall": 1.0,
     "f1": 1.0,
     "balanced_accuracy": 1.0,
-    "positive_rate": 0.1346153846153846
+    "positive_rate": 0.1346153846153846,
+    "confusion_matrix": {
+      "true_negative": 99000,
+      "false_positive": 0,
+      "false_negative": 0,
+      "true_positive": 15400
+    }
   },
   "test": {
     "split": "test",
@@ -17,6 +23,12 @@
     "recall": 1.0,
     "f1": 1.0,
     "balanced_accuracy": 1.0,
-    "positive_rate": 0.1346153846153846
+    "positive_rate": 0.1346153846153846,
+    "confusion_matrix": {
+      "true_negative": 24975,
+      "false_positive": 0,
+      "false_negative": 0,
+      "true_positive": 3885
+    }
   }
 }
